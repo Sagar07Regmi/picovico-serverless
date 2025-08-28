@@ -1,18 +1,42 @@
 version: 0.2
 
+env:
+  variables:
+    ARTIFACT_BUCKET: "picovico-artifacts-1756198500.37837"
+
 phases:
   install:
     runtime-versions:
       python: 3.11
+    commands:
+      - echo "Install build tools"
+      - pip install --upgrade pip
+      - pip install aws-sam-cli==1.143.0 || true
+      - sam --version || true
+  pre_build:
+    commands:
+      - echo "Pre-build: show versions"
+      - python --version
+      - aws --version
+      - echo "Using ARTIFACT_BUCKET=$ARTIFACT_BUCKET"
   build:
     commands:
-      - echo "Running SAM build"
+      - echo "Running sam build"
       - sam build
-      - echo "Packaging SAM template"
-      - sam package \
-          --s3-bucket $ARTIFACT_BUCKET \
-          --output-template-file packaged.yaml
+      - echo "Packaging with sam package"
+      - sam package --s3-bucket $ARTIFACT_BUCKET --output-template-file packaged.yaml
+  post_build:
+    commands:
+      - echo "Build completed"
+      - ls -la
 
 artifacts:
   files:
     - packaged.yaml
+    - .aws-sam/**/*
+  discard-paths: yes
+
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
+    - '~/.cache/pip/**/*'
