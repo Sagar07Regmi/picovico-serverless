@@ -1,0 +1,37 @@
+@"
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+.env.*
+
+# SAM / build artifacts
+.aws-sam/
+packaged.yaml
+.build/
+.build/**
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Node / others
+node_modules/
+
+# Local credentials
+.aws/
+credentials
+samconfig.toml
+
+# Archives / zips
+*.zip
+
+# VSCode extensions and caches
+.vscode/
+"@ | Out-File -Encoding utf8 .gitignore

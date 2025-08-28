@@ -1,0 +1,301 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Picovico Booking Lifecycle - Booking, SeatLock, Payment, TicketIssuance, Notifications
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 512
+    Tracing: Active
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Resources:
+
+  ## DynamoDB Tables
+  BookingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "picovico-bookings-${Stage}"
+      AttributeDefinitions:
+        - AttributeName: bookingId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: bookingId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  SeatLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "picovico-seatlocks-${Stage}"
+      AttributeDefinitions:
+        - AttributeName: showId
+          AttributeType: S
+        - AttributeName: seatId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: showId
+          KeyType: HASH
+        - AttributeName: seatId
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  ## S3 Bucket for tickets
+  TicketBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "picovico-tickets-${Stage}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+  ## SNS Topic for notifications
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "picovico-notifications-${Stage}"
+
+  ## SeatLock Lambda (existing)
+  SeatLockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-seatlock-${Stage}"
+      CodeUri: src/seatlock/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SEAT_LOCK_TABLE: !Ref SeatLockTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SeatLockTable
+
+  ## SeatUnlock Lambda 
+  SeatUnlockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-seatunlock-${Stage}"
+      CodeUri: src/seatunlock/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SEAT_LOCK_TABLE: !Ref SeatLockTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SeatLockTable
+
+  ## Booking Handler (API) - updated
+  BookingHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-booking-handler-${Stage}"
+      CodeUri: src/booking/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          BOOKING_TABLE: !Ref BookingTable
+          SEAT_LOCK_FUNCTION: !GetAtt SeatLockFunction.Arn
+          PAYMENT_STATE_MACHINE_ARN: !Ref PaymentStateMachine
+          EVENT_BUS_NAME: default
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BookingTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+              - states:StartExecution
+              - events:PutEvents
+            Resource: "*"
+      Events:
+        BookingApi:
+          Type: HttpApi
+          Properties:
+            Path: /bookings
+            Method: POST
+            ApiId: !Ref BookingHttpApi
+
+  BookingHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub "picovico-booking-api-${Stage}"
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: ["POST", "OPTIONS"]
+
+  ## Payment Processor Lambda
+  PaymentProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-payment-processor-${Stage}"
+      CodeUri: src/payment/
+      Handler: app.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          BOOKING_TABLE: !Ref BookingTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BookingTable
+
+  ## Ticket Issuance Lambda
+  TicketIssuanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-ticket-issuance-${Stage}"
+      CodeUri: src/ticket_issuance/
+      Handler: app.lambda_handler
+      Timeout: 60
+      MemorySize: 1024
+      Environment:
+        Variables:
+          TICKET_BUCKET: !Ref TicketBucket
+          BOOKING_TABLE: !Ref BookingTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref TicketBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BookingTable
+
+  ## Notification Dispatcher Lambda
+  NotificationDispatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "picovico-notification-dispatcher-${Stage}"
+      CodeUri: src/notification/
+      Handler: app.lambda_handler
+      Timeout: 20
+      Environment:
+        Variables:
+          NOTIFICATION_TOPIC: !Ref NotificationTopic
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - sns:Publish
+              - ses:SendEmail
+              - ses:SendRawEmail
+            Resource: "*"
+
+  ## Step Functions role
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "picovico-stepfn-role-${Stage}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFnExecPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:InvokeAsync
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: "*"
+
+  ## Payment orchestrator Step Function (real)
+  PaymentStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "picovico-payment-orchestrator-${Stage}"
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Payment orchestrator for Picovico",
+          "StartAt": "AttemptPayment",
+          "States": {
+            "AttemptPayment": {
+              "Type": "Task",
+              "Resource": "${PaymentProcessorFunction.Arn}",
+              "ResultPath": "$.paymentResult",
+              "TimeoutSeconds": 30,
+              "Next": "PaymentDecision"
+            },
+            "PaymentDecision": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.paymentResult.status",
+                  "StringEquals": "PAID",
+                  "Next": "IssueTicket"
+                }
+              ],
+              "Default": "PaymentFailed"
+            },
+            "IssueTicket": {
+              "Type": "Task",
+              "Resource": "${TicketIssuanceFunction.Arn}",
+              "ResultPath": "$.ticketResult",
+              "TimeoutSeconds": 60,
+              "Next": "NotifySuccess"
+            },
+            "NotifySuccess": {
+              "Type": "Task",
+              "Resource": "${NotificationDispatcherFunction.Arn}",
+              "Parameters": {
+                "bookingId.$": "$.bookingId",
+                "status": "PAID",
+                "ticketUrl.$": "$.ticketResult.ticketUrl",
+                "customerId.$": "$.customerId"
+              },
+              "End": true
+            },
+            "PaymentFailed": {
+              "Type": "Task",
+              "Resource": "${SeatUnlockFunction.Arn}",
+              "Parameters": {
+                "bookingId.$": "$.bookingId",
+                "showId.$": "$.showId",
+                "seats.$": "$.seats"
+              },
+              "Next": "NotifyFailure"
+            },
+            "NotifyFailure": {
+              "Type": "Task",
+              "Resource": "${NotificationDispatcherFunction.Arn}",
+              "Parameters": {
+                "bookingId.$": "$.bookingId",
+                "status": "FAILED",
+                "customerId.$": "$.customerId"
+              },
+              "End": true
+            }
+          }
+        }
+
+Outputs:
+  BookingApiUrl:
+    Description: "HTTP API URL (POST /bookings)"
+    Value: !Sub "https://${BookingHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  BookingTableName:
+    Value: !Ref BookingTable
+  SeatLockTableName:
+    Value: !Ref SeatLockTable
+  TicketBucketName:
+    Value: !Ref TicketBucket
+  NotificationTopicArn:
+    Value: !Ref NotificationTopic
+  PaymentStateMachineArn:
+    Value: !Ref PaymentStateMachine
