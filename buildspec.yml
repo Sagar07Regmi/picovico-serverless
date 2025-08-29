@@ -3,40 +3,46 @@ version: 0.2
 env:
   variables:
     ARTIFACT_BUCKET: "picovico-artifacts-1756198500.37837"
+    DEFAULT_REGION: "eu-north-1"
 
 phases:
   install:
     runtime-versions:
       python: 3.11
     commands:
-      - echo "Installing build tools..."
-      - pip install --upgrade pip
-      - pip install aws-sam-cli
+      - "echo 'Installing build tools...'"
+      - "pip install --upgrade pip"
+      - "pip install aws-sam-cli"
+
   pre_build:
     commands:
-      - echo "Pre-build: show versions"
-      - python --version
-      - aws --version
-      - sam --version || true
-      - echo "Using ARTIFACT_BUCKET=${ARTIFACT_BUCKET:-picovico-artifacts-1756198500.37837}"
+      - "echo 'Pre-build: show versions'"
+      - "python --version"
+      - "aws --version"
+      - "sam --version || true"
+      - "echo 'Using ARTIFACT_BUCKET=${ARTIFACT_BUCKET}'"
+      - "export S3_PREFIX=\"sam-artifacts/$(echo ${CODEBUILD_RESOLVED_SOURCE_VERSION:-local} | cut -c1-7)-$(date +%s)\""
+      - "echo 'S3_PREFIX set to:' \"$S3_PREFIX\""
+
   build:
     commands:
-      - echo "Running SAM build..."
-      - sam build
-      - echo "Packaging SAM template..."
-      - sam package --s3-bucket "$ARTIFACT_BUCKET" --output-template-file packaged.yaml
+      - "echo 'Running SAM build...'"
+      - "sam build --use-container || sam build"
+      - "echo 'Packaging SAM template...'"
+      - "sam package --s3-bucket \"${ARTIFACT_BUCKET}\" --s3-prefix \"${S3_PREFIX}\" --output-template-file packaged.yaml --region \"${DEFAULT_REGION}\""
+
   post_build:
     commands:
-      - echo "Build completed"
-      - ls -la
+      - "echo 'Build completed'"
+      - "ls -la"
 
 artifacts:
   files:
-    - packaged.yaml
-    - .aws-sam/**/*
+    - "packaged.yaml"
+    - ".aws-sam/**/*"
   discard-paths: yes
 
 cache:
   paths:
-    - /root/.cache/pip/**/*
-    - ~/.cache/pip/**/*
+    - "/root/.cache/pip/**/*"
+    - "~/.cache/pip/**/*"
