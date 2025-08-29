@@ -16,16 +16,15 @@ phases:
       - echo "Pre-build: show versions"
       - python --version
       - aws --version
-      - sam --version
+      - sam --version || true
       - echo "Using ARTIFACT_BUCKET=$ARTIFACT_BUCKET"
   build:
     commands:
       - echo "Running SAM build"
       - sam build
-      - echo "Packaging SAM template"
-      - sam package \
-          --s3-bucket $ARTIFACT_BUCKET \
-          --output-template-file packaged.yaml
+      - |
+        echo "Packaging SAM template"
+        sam package --s3-bucket "$ARTIFACT_BUCKET" --output-template-file packaged.yaml
   post_build:
     commands:
       - echo "Build completed"
@@ -39,5 +38,5 @@ artifacts:
 
 cache:
   paths:
-    - '/root/.cache/pip/**/*'
-    - '~/.cache/pip/**/*'
+    - /root/.cache/pip/**/*
+    - ~/.cache/pip/**/*
