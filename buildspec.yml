@@ -9,7 +9,7 @@ phases:
     runtime-versions:
       python: 3.11
     commands:
-      - echo "Install build tools"
+      - echo "Installing build tools..."
       - pip install --upgrade pip
       - pip install aws-sam-cli
   pre_build:
@@ -18,12 +18,12 @@ phases:
       - python --version
       - aws --version
       - sam --version || true
-      - echo "Using ARTIFACT_BUCKET=$ARTIFACT_BUCKET"
+      - echo "Using ARTIFACT_BUCKET=${ARTIFACT_BUCKET:-picovico-artifacts-1756198500.37837}"
   build:
     commands:
-      - echo "Running SAM build"
+      - echo "Running SAM build..."
       - sam build
-      - echo "Packaging SAM template"
+      - echo "Packaging SAM template..."
       - sam package --s3-bucket "$ARTIFACT_BUCKET" --output-template-file packaged.yaml
   post_build:
     commands:
